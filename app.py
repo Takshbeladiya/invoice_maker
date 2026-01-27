@@ -182,16 +182,20 @@ def bulk_update_ratios(active_products):
 # RENAMED: This is your original PDF function, now for invoices without amounts.
 def generate_invoice_pdf_no_amount(invoice_data):
     """Generates a landscape PDF invoice with an itemized breakdown WITHOUT costs."""
-    LOGO_BASE64 = "" 
-
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
     styles = getSampleStyleSheet()
     story = []
 
-    if LOGO_BASE64:
-        # ... (logo logic remains the same)
-        pass
+    # --- 1. Add Centered Logo ---
+    logo_path = "celestia_logo.png"
+    try:
+        # Adjust width and height as needed while maintaining aspect ratio
+        logo = Image(logo_path, width=170, height=60)
+        logo.hAlign = 'CENTER' 
+        story.append(logo)
+    except Exception as e:
+        print(f"Could not load image: {e}")
 
     header_data = [
         [Paragraph('<b>Interior Shin</b><br/>123 Decor St, Window City, 12345<br/>contact@interiorshin.com<br/>+1 940-594-8904', styles['Normal']), 
@@ -248,12 +252,20 @@ def generate_invoice_pdf_no_amount(invoice_data):
 # NEW: This function generates the detailed invoice WITH amounts.
 def generate_invoice_pdf_with_amount(invoice_data):
     """Generates a landscape PDF invoice with a full cost breakdown."""
-    LOGO_BASE64 = ""
-
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
     styles = getSampleStyleSheet()
     story = []
+
+    # --- 1. Add Centered Logo ---
+    logo_path = "celestia_logo.png"
+    try:
+        # Adjust width and height as needed while maintaining aspect ratio
+        logo = Image(logo_path, width=170, height=60)
+        logo.hAlign = 'CENTER' 
+        story.append(logo)
+    except Exception as e:
+        print(f"Could not load image: {e}")
 
     # --- Header ---
     header_data = [
@@ -639,6 +651,7 @@ def display_blinds_table():
                 recalculate_all_blinds()
                 st.rerun()
 
+
 # --- MAIN APPLICATION FLOW (UPDATED)---
 def main():
     st.set_page_config(page_title="Blinds Cost Calculator", layout="wide")
@@ -743,7 +756,22 @@ def main():
         st.subheader("💰 Cost Summary")
         sub_totals = {p: sum(b.get(f'{p}_cost', 0) for b in st.session_state.blinds_data) for p in available_products}
         shipping_totals = {p: sum(b.get('shipping_cost', 0) for b in st.session_state.blinds_data if b.get('selected_products', {}).get(p)) for p in available_products}
-        profit_totals = {p: (sub_totals[p] * st.session_state.get(f"profit_{p}", 0)) for p in available_products}
+        # profit_totals = {p: (sub_totals[p] * st.session_state.get(f"profit_{p}", 0)) for p in available_products}
+        
+        profit_totals = {p: 0.0 for p in available_products}
+        for blind in st.session_state.blinds_data:
+            for p in available_products:
+                cost_key = f"{p}_cost"
+                ratio_key = f"{p}_profit_ratio"
+                
+                # Check if this product was selected for this blind and has a cost
+                if blind.get('selected_products', {}).get(p) and blind.get(cost_key, 0) > 0:
+                    # Get the ratio used for this specific blind (defaulting to 1 if not found to avoid div by zero)
+                    ratio = blind.get('pricing', {}).get(ratio_key, 1.0)
+                    
+                    # Profit = Subtotal * (1 - Ratio)
+                    blind_product_profit = blind[cost_key] * (1 - ratio)
+                    profit_totals[p] += blind_product_profit
         total_motor_cost = st.session_state.motor_quantity * (st.session_state.motor_price + st.session_state.motor_shipping_price)
         
         net_profit = sum(profit_totals.values())
@@ -807,7 +835,7 @@ def main():
                             'overall_sub_total': overall_sub_total,
                             'overall_shipping_total': overall_shipping_total,
                             'bill_total': bill_total
-                        }
+                        }   
                         st.session_state.pdf_report_data_with_amount = generate_invoice_pdf_with_amount(invoice_data)
             
             # --- Download Buttons (appear after generation) ---
@@ -859,21 +887,6 @@ def main():
             st.rerun()
 
     st.markdown("---")
-    with st.expander("📐 View Calculation Formulas"):
-        st.markdown("""
-        **1. Core Blind Calculation (per line item):**
-        - **Total Sq Ft** = `((Width * Height) / 144) * Number of Blinds`
-        - **Product Sub-Total** = `Total Sq Ft * (Product Price / Profit Ratio)`
-        
-        **2. Shipping Cost Calculation:**
-        - `Shipping Cost (per piece)` = `(((Width in CM * 13 * 13) / 4850) * 10) / Shipping Rate`
-        - `Total Shipping Cost` = Sum of `Shipping Cost (per piece)` for all physical pieces.
-
-        **3. Final Cost Summary Calculations:**
-        - **Product Profit** = `Product Sub-Total * Product Profit %`
-        - `Net Profit` = Sum of all `Product Profit` values.
-        - `Bill Total` = `Overall Sub-Total` + `Total Estimated Shipping` + `Total Motor Cost`
-        """)
-
+   
 if __name__ == "__main__":
     main()
