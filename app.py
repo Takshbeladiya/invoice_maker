@@ -103,7 +103,7 @@ def calculate_blind_costs(width, height, total_blinds, mount, pricing, shipping_
     if total_pieces is None:
         total_pieces = total_blinds
     
-    total_sqft_final = (width * height / 144) * total_blinds
+    total_sqft_final = (width * height / 144) * (total_blinds * total_pieces)
     
     number_of_splits = 1
     actual_total_pieces = total_pieces
@@ -190,7 +190,7 @@ def generate_invoice_pdf_no_amount(invoice_data):
     story.append(Paragraph("<b>Itemized Breakdown</b>", styles['h3']))
 
     has_splits = any(b.get('number_of_splits', 1) > 1 for b in invoice_data['blinds_data'])
-    headers = ['ID', 'Desc', 'W', 'H', 'Undivided', 'Total', 'Mount']
+    headers = ['ID', 'Desc', 'W', 'H', 'Window', 'Blind Per Window', 'Mount']
     if has_splits: 
         headers.insert(6, 'Split')
     
@@ -254,7 +254,7 @@ def generate_invoice_pdf_with_amount(invoice_data):
     active_products = invoice_data['active_products']
     has_splits = any(b.get('number_of_splits', 1) > 1 for b in invoice_data['blinds_data'])
     
-    headers = ['ID', 'Desc', 'W', 'H', 'Undivided', 'Total']
+    headers = ['ID', 'Desc', 'W', 'H', 'Window', 'Blind Per Window']
     if has_splits:
         headers.append('Split')
     headers.append('Mount')
@@ -344,9 +344,11 @@ def generate_invoice_pdf_with_amount(invoice_data):
     return pdf_bytes
 
 # --- EXCEL GENERATION FUNCTION (RESIZE COLUMN REMOVED) ---
+# --- UPDATED EXCEL GENERATION FUNCTION ---
 def generate_excel_report(blinds_data, session_state, active_products):
     """
-    Generates an Excel report with customer details at the top, then blind table starting from A5.
+    Generates an Excel report with customer details, blind table, and complete summary.
+    Uses latest calculation methods: Product Cost = Price * Sq Ft
     """
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -361,26 +363,22 @@ def generate_excel_report(blinds_data, session_state, active_products):
     customer_label_font = Font(bold=True)
 
     # --- CUSTOMER DETAILS SECTION (A1-A3 and C1) ---
-    # Customer Name (A1)
     ws.cell(row=1, column=1, value="Customer Name:")
     ws.cell(row=1, column=1).font = customer_label_font
     
-    # Address (A2)
     ws.cell(row=2, column=1, value="Address:")
     ws.cell(row=2, column=1).font = customer_label_font
     
-    # Phone No (A3)
     ws.cell(row=3, column=1, value="Phone No:")
     ws.cell(row=3, column=1).font = customer_label_font
     
-    # Current Date (C1)
     date_cell = ws.cell(row=1, column=3, value=f"Date: {datetime.now().strftime('%B %d, %Y')}")
     date_cell.font = customer_label_font
     
     # --- BLIND TABLE SECTION (starting from A5) ---
     table_start_row = 5
     
-    headers = ['ID', 'Desc', 'W', 'H', 'Undivided', 'Total', 'Split', 'Mount', 'Total Sq Ft']
+    headers = ['ID', 'Desc', 'W', 'H', 'Window', 'Blind Per Window', 'Mount', 'Total Sq Ft']
     for product in active_products:
         headers.append(f"{product.replace('_', ' ').capitalize()} Cost")
     headers.extend(['Shipping Cost', 'Line Total'])
@@ -399,55 +397,59 @@ def generate_excel_report(blinds_data, session_state, active_products):
         ws.cell(row=row_num, column=4, value=blind['height']).fill = input_fill
         ws.cell(row=row_num, column=5, value=blind['total_blinds'])
         ws.cell(row=row_num, column=6, value=blind.get('actual_total_pieces', blind['total_blinds']))
-        
-        number_of_splits = blind.get('number_of_splits', 1)
-        split_display = f"{blind['width']} / {number_of_splits}" if number_of_splits > 1 else "-"
-        ws.cell(row=row_num, column=7, value=split_display)
-        ws.cell(row=row_num, column=8, value=blind['mount'])
+        ws.cell(row=row_num, column=7, value=blind['mount'])
 
         w_cell, h_cell, num_cell_undivided, num_cell_total = f'C{row_num}', f'D{row_num}', f'E{row_num}', f'F{row_num}'
 
-        
-        sqft_formula = f"=IFERROR(ROUND((({w_cell}*{h_cell})/144)*{num_cell_undivided}, 2), 0)"
-        sqft_cell_obj = ws.cell(row=row_num, column=9, value=sqft_formula)
+        # Sq Ft Formula
+        sqft_formula = f"=IFERROR(ROUND((({w_cell}*{h_cell})/144)*({num_cell_undivided}*{num_cell_total}), 2), 0)"
+        sqft_cell_obj = ws.cell(row=row_num, column=8, value=sqft_formula)
         sqft_cell_obj.number_format = '0.00'
-        sqft_cell = f'I{row_num}'
+        sqft_cell = f'H{row_num}'
         
+        # Product Cost Formulas (using new method: Price * Sq Ft)
         product_cost_cells = []
-        col_idx = 10
+        col_idx = 9
         for p in active_products:
             blind_pricing = blind.get('pricing', {})
             price = blind_pricing.get(f'{p}_price', session_state.pricing.get(f'{p}_price', 0))
             ratio = blind_pricing.get(f'{p}_profit_ratio', session_state.pricing.get(f'{p}_profit_ratio', 1))
             
+            # NEW FORMULA: Product Cost = Price * Sq Ft
             p_formula = f"=IFERROR(IF({ratio}>0, ROUND({sqft_cell}*({price}/{ratio}), 2), 0), 0)"
             
-            if not blind.get('selected_products', {}).get(p, False): p_formula = 0
+            # Only show cost if product is selected
+            if not blind.get('selected_products', {}).get(p, False): 
+                p_formula = 0
             
             p_cell_obj = ws.cell(row=row_num, column=col_idx, value=p_formula)
             p_cell_obj.number_format = '$#,##0.00'
             product_cost_cells.append(f'{get_column_letter(col_idx)}{row_num}')
             col_idx += 1
 
+        # Shipping Cost Formula
         shipping_rate = blind.get('shipping_rate', 0.9)
         shipping_formula = f"=IF({shipping_rate}>0, ROUND((((((({w_cell}+2)*2.5)*13*13)/4850)*10)/{shipping_rate})*({num_cell_total}*{num_cell_undivided}), 2), 0)"
         shipping_cell_obj = ws.cell(row=row_num, column=col_idx, value=shipping_formula)
         shipping_cell_obj.number_format = '$#,##0.00'
-        shipping_cell = f'{get_column_letter(col_idx)}{row_num}'; col_idx += 1
+        shipping_cell = f'{get_column_letter(col_idx)}{row_num}'
+        col_idx += 1
         
+        # Line Total Formula
         line_total_formula = f"=ROUND(SUM({','.join(product_cost_cells)}, {shipping_cell}), 2)"
         line_total_obj = ws.cell(row=row_num, column=col_idx, value=line_total_formula)
         line_total_obj.number_format = '$#,##0.00'
         
         row_num += 1
 
+    # --- MOTOR ROW ---
     if session_state.motor_quantity > 0:
         ws.cell(row=row_num, column=2, value="Motor")
         ws.cell(row=row_num, column=5, value=session_state.motor_quantity)
         ws.cell(row=row_num, column=6, value=session_state.motor_quantity)
         
-        first_product_col_idx = 10
-        shipping_col_idx = 9 + len(active_products) + 1
+        first_product_col_idx = 9
+        shipping_col_idx = 8 + len(active_products) + 1
         total_col_idx = shipping_col_idx + 1
 
         motor_price_cell_obj = ws.cell(row=row_num, column=first_product_col_idx, value=session_state.motor_price)
@@ -467,38 +469,223 @@ def generate_excel_report(blinds_data, session_state, active_products):
 
     last_data_row = row_num - 1
     last_blind_row = last_data_row - (1 if session_state.motor_quantity > 0 else 0)
-    summary_start_row = row_num + 1
+    summary_start_row = row_num + 2
     
-    label_col, value_col, current_summary_row = 2, 3, summary_start_row
+    # --- SUMMARY SECTION (NEW FORMAT) ---
+    label_col, value_col = 2, 3
+    current_summary_row = summary_start_row
+    
+    # # Product Cost Summary (using new calculation: Price * Sq Ft)
+    # ws.cell(row=current_summary_row, column=label_col, value="PRODUCT COST SUMMARY").font = summary_label_font
+    # current_summary_row += 1
+    
+    # for i, p in enumerate(active_products):
+    #     product_col_letter = get_column_letter(9 + i)
+    #     product_total_formula = f"=ROUND(SUM({product_col_letter}{table_start_row+1}:{product_col_letter}{last_blind_row}), 2)"
+    #     p_clean = p.replace('_', ' ').capitalize()
+    #     product_cost_summmary_saved_row = current_summary_row
+    #     ws.cell(row=current_summary_row, column=label_col, value=f"{p_clean} Cost:")
 
-    shipping_col_letter = get_column_letter(9 + len(active_products) + 1)
-    shipping_total_formula = f"=ROUND(SUM({shipping_col_letter}{table_start_row+1}:{shipping_col_letter}{last_data_row}), 2)"
+    #     product_summary_cell = ws.cell(row=current_summary_row, column=value_col, value=product_total_formula)
+    #     product_summary_cell.number_format = '"$"#,##0.00'
+    #     current_summary_row += 1
+
+    # Shipping Summary
+    current_summary_row += 1
+    ws.cell(row=current_summary_row, column=label_col, value="SHIPPING SUMMARY").font = summary_label_font
+    current_summary_row += 1
+    
+    shipping_col_letter = get_column_letter(8 + len(active_products) + 1)
+    shipping_total_formula = f"=ROUND(SUM({shipping_col_letter}{table_start_row+1}:{shipping_col_letter}{last_blind_row}), 2)"
     ws.cell(row=current_summary_row, column=label_col, value="Total Estimated Shipping:")
     shipping_summary_cell = ws.cell(row=current_summary_row, column=value_col, value=shipping_total_formula)
     shipping_summary_cell.number_format = '"$"#,##0.00'
     current_summary_row += 1
 
+    # Profit Summary
+    
+    ws.cell(row=current_summary_row, column=label_col, value="PROFIT SUMMARY").font = summary_label_font
+    current_summary_row += 1
+    
+    # Store cost and profit cell references
+    product_cost_refs = {}    # product → cost cell coordinate
+    product_profit_refs = []  # list of profit cell coordinates (for summing later)
+
     for i, p in enumerate(active_products):
-        product_col_letter = get_column_letter(10 + i)
-        product_total_formula = f"=ROUND(SUM({product_col_letter}{table_start_row+1}:{product_col_letter}{last_blind_row}), 2)"
+        product_col_letter = get_column_letter(9 + i)
         p_clean = p.replace('_', ' ').capitalize()
-        ws.cell(row=current_summary_row, column=label_col, value=f"{p_clean} Only Cost")
-        product_summary_cell = ws.cell(row=current_summary_row, column=value_col, value=product_total_formula)
+        
+        # Instead of summing the Excel column (which has / ratio),
+        # calculate total cost using only price * sqft
+        total_cost_direct = 0.0
+        for blind in blinds_data:
+            if not blind.get('selected_products', {}).get(p, False):
+                continue
+            sqft = blind.get('total_sqft', 0)
+            price = blind.get('pricing', {}).get(f'{p}_price',
+                        session_state.pricing.get(f'{p}_price', 0))
+            total_cost_direct += price * sqft
+
+        ws.cell(row=current_summary_row, column=label_col, value=f"{p_clean} Cost (price × sqft):")
+        
+        product_summary_cell = ws.cell(
+            row=current_summary_row,
+            column=value_col,
+            value=round(total_cost_direct, 2)
+        )
         product_summary_cell.number_format = '"$"#,##0.00'
+        
+        product_cost_refs[p] = product_summary_cell.coordinate
+        
         current_summary_row += 1
 
-    total_col_letter = get_column_letter(len(headers))
-    bill_total_formula = f"=ROUND(SUM({total_col_letter}{table_start_row+1}:{total_col_letter}{last_data_row}), 2)"
+    # Now write Profit lines and collect their cell references
+    for i, p in enumerate(active_products):
+        p_clean = p.replace('_', ' ').capitalize()
+        cost_ref = product_cost_refs.get(p, "0")   # still useful for reference
+
+        # Calculate total profit by looping over actual blinds data
+        profit_value = 0.0
+        for blind in blinds_data:
+            if not blind.get('selected_products', {}).get(p, False):
+                continue
+            
+            blind_cost = blind.get(f'{p}_cost', 0)
+            ratio = blind.get('pricing', {}).get(f'{p}_profit_ratio', 0.3)  # fallback if missing
+            
+            if 0 < ratio < 1:
+                profit_value += (1 - ratio) * blind_cost
+
+        # Write the calculated value (static number, not formula)
+        profit_cell = ws.cell(
+            row=current_summary_row,
+            column=value_col,
+            value=round(profit_value, 2)
+        )
+        profit_cell.number_format = '"$"#,##0.00'
+
+        # Label — you can customize the text
+        ws.cell(
+            row=current_summary_row,
+            column=label_col,
+            value=f"{p_clean} Profit (per blind ratio):"
+        )
+
+        # Still collect for net profit sum later
+        product_profit_refs.append(profit_cell.coordinate)
+        
+        current_summary_row += 1
+
+        # Total Calculations
+    current_summary_row += 1
+    ws.cell(row=current_summary_row, column=label_col, value="TOTALS").font = summary_label_font
+    current_summary_row += 1
+
+    # ────────────────────────────────────────────────
+    # Overall Sub-Total (sum of all product costs)
+    # ────────────────────────────────────────────────
+    product_cost_cols = [get_column_letter(9 + i) for i in range(len(active_products))]
+    overall_subtotal_formula = f"=ROUND(SUM({','.join([f'{col}{table_start_row+1}:{col}{last_blind_row}' for col in product_cost_cols])}), 2)"
+
+    ws.cell(row=current_summary_row, column=label_col, value="Overall Sub-Total:")
+    overall_subtotal_cell = ws.cell(
+        row=current_summary_row,
+        column=value_col,
+        value=overall_subtotal_formula
+    )
+    overall_subtotal_cell.number_format = '"$"#,##0.00'
+    overall_subtotal_ref = overall_subtotal_cell.coordinate     # e.g. C22
+    current_summary_row += 1
+
+    # ────────────────────────────────────────────────
+    # Total Estimated Shipping (only blinds)
+    # ────────────────────────────────────────────────
+    ws.cell(row=current_summary_row, column=label_col, value="Total Estimated Shipping:")
+    total_shipping_cell = ws.cell(
+        row=current_summary_row,
+        column=value_col,
+        value=shipping_total_formula
+    )
+    total_shipping_cell.number_format = '"$"#,##0.00'
+    total_shipping_ref = total_shipping_cell.coordinate         # e.g. C23
+    current_summary_row += 1
+
+    # ────────────────────────────────────────────────
+    # Motor Cost (includes motor shipping)
+    # ────────────────────────────────────────────────
+    motor_cost_formula = f"={session_state.motor_quantity}*({session_state.motor_price}+{session_state.motor_shipping_price})"
+
+    ws.cell(row=current_summary_row, column=label_col, value="Motor Cost:")
+    motor_cost_cell = ws.cell(
+        row=current_summary_row,
+        column=value_col,
+        value=motor_cost_formula
+    )
+    motor_cost_cell.number_format = '"$"#,##0.00'
+    motor_cost_ref = motor_cost_cell.coordinate                 # e.g. C24
+    current_summary_row += 1
+
+    # ────────────────────────────────────────────────
+    # Net Profit = sum of individual product profit cells
+    # ────────────────────────────────────────────────
+    ws.cell(row=current_summary_row, column=label_col, value="Net Profit:")
     
-    bill_total_label_cell = ws.cell(row=current_summary_row, column=label_col, value="Bill Total:")
+    if product_profit_refs:
+        net_profit_formula = f"=ROUND(SUM({','.join(product_profit_refs)}), 2)"
+    else:
+        net_profit_formula = "0"
+
+    net_profit_cell = ws.cell(
+        row=current_summary_row,
+        column=value_col,
+        value=net_profit_formula
+    )
+    net_profit_cell.number_format = '"$"#,##0.00'
+    net_profit_ref = net_profit_cell.coordinate                  # e.g. C25
+    current_summary_row += 1
+
+    # ────────────────────────────────────────────────
+    # BILL TOTAL = Overall Sub-Total + Net Profit + Total Est. Shipping + Motor Cost
+    # ────────────────────────────────────────────────
+    bill_total_label_cell = ws.cell(
+        row=current_summary_row,
+        column=label_col,
+        value="BILL TOTAL:"
+    )
     bill_total_label_cell.font = summary_label_font
     bill_total_label_cell.fill = bill_total_fill
-    
-    bill_total_value_cell = ws.cell(row=current_summary_row, column=value_col, value=bill_total_formula)
+
+    # Use the actual cell coordinates we just created
+    bill_total_formula = f"=ROUND({overall_subtotal_ref} + {motor_cost_ref} + {total_shipping_ref} + {motor_cost_ref}, 2)"
+
+    bill_total_value_cell = ws.cell(
+        row=current_summary_row,
+        column=value_col,
+        value=bill_total_formula
+    )
     bill_total_value_cell.font = summary_label_font
     bill_total_value_cell.fill = bill_total_fill
     bill_total_value_cell.number_format = '"$"#,##0.00'
+    bill_total_ref = bill_total_value_cell.coordinate            # e.g. C26
+    current_summary_row += 1
+
+    # ────────────────────────────────────────────────
+    # Net Profit %
+    # ────────────────────────────────────────────────
+    net_profit_percent_formula = f"=IF({bill_total_ref}>0, ROUND({net_profit_ref}/{bill_total_ref}*100, 2), 0)"
+
+    ws.cell(row=current_summary_row, column=label_col, value="Net Profit %:")
+    net_profit_percent_cell = ws.cell(
+        row=current_summary_row,
+        column=value_col,
+        value=net_profit_percent_formula
+    )
+    net_profit_percent_cell.number_format = '0.00"%"'
     
+
+
+
+    # --- COLUMN WIDTHS ---
     for col_idx_num in range(1, ws.max_column + 1):
         ws.column_dimensions[get_column_letter(col_idx_num)].width = 15
     ws.column_dimensions['B'].width = 30
@@ -506,7 +693,6 @@ def generate_excel_report(blinds_data, session_state, active_products):
     buffer = BytesIO()
     wb.save(buffer)
     return buffer.getvalue()
-
 
 
 # --- ADD/EDIT FORM (RESIZE CHECKBOX REMOVED) ---
@@ -521,7 +707,7 @@ def add_blind_form(available_products):
     if 'form_product_selection' not in st.session_state:
         st.session_state.form_product_selection = [name for name, selected in defaults.get('selected_products', {}).items() if selected]
 
-    form_title = "✏️ Edit Blind" if is_editing else "➕ Add New Blind"
+    form_title = "✏️ Edit Blind" if is_editing else "p Add New Blind"
     st.subheader(form_title)
     
     st.multiselect("Products", options=available_products, default=st.session_state.form_product_selection, key="form_product_selection")
@@ -533,8 +719,8 @@ def add_blind_form(available_products):
             width = st.number_input("Width (inches)", min_value=1.0, value=float(defaults.get('width')), step=0.5)
             height = st.number_input("Height (inches)", min_value=1.0, value=float(defaults.get('height')), step=0.5)
         with col2:
-            total_blinds = st.number_input("Number of Blinds (Undivided)", min_value=1, value=int(defaults.get('total_blinds')))
-            total_pieces = st.number_input("Total (for Shipping)", min_value=1, value=int(defaults.get('total_pieces', defaults.get('total_blinds'))), help="Total pieces used to calculate shipping cost")
+            total_blinds = st.number_input("Number of Windows", min_value=1, value=int(defaults.get('total_blinds')))
+            total_pieces = st.number_input("Blind Per Window", min_value=1, value=int(defaults.get('total_pieces', defaults.get('total_blinds'))), help="Total pieces used to calculate shipping cost")
         
         col3, col4 = st.columns(2)
         with col3:
@@ -600,7 +786,7 @@ def add_blind_form(available_products):
             del st.session_state.form_product_selection
             st.rerun()
 
-# --- DISPLAY TABLE (RESIZE COLUMN REMOVED) ---
+# --- DISPLAY TABLE (DATAFRAME VERSION) ---
 def display_blinds_table():
     if not st.session_state.blinds_data:
         return
@@ -614,42 +800,91 @@ def display_blinds_table():
         if key.endswith('_cost') and blind[key] > 0 and key != 'shipping_cost'
     )))
     
-    headers = ['ID', 'Desc', 'W', 'H', 'Undivided', 'Total', 'Mount', 'Sq Ft']
-    headers.extend([p.replace('_', ' ').capitalize() for p in active_products])
-    headers.extend(['Shipping', 'Edit', 'Delete'])
-    
-    header_cols = st.columns(len(headers))
-    for i, header in enumerate(headers):
-        header_cols[i].markdown(f"**{header}**")
-    st.markdown("---")
-
+    # --- Build DataFrame ---
+    table_data = []
     for blind in sorted(st.session_state.blinds_data, key=lambda x: x['id']):
-        cols = st.columns(len(headers))
-        row_data_static = [
-            blind['id'], blind.get('description', 'N/A'), f"{blind['width']}\"", f"{blind['height']}\"",
-            blind['total_blinds'], blind.get('total_pieces', blind.get('actual_total_pieces', blind['total_blinds'])),
-            blind['mount'], f"{blind['total_sqft']:.2f}"
-        ]
-        for j, value in enumerate(row_data_static):
-            cols[j].write(value)
-            
-        col_offset = len(row_data_static)
-        for i, product_name in enumerate(active_products):
+        row = {
+            'ID': blind['id'],
+            'Description': blind.get('description', 'N/A'),
+            'Width (")': blind['width'],
+            'Height (")': blind['height'],
+            'Windows': blind['total_blinds'],
+            'Blind Per Window': blind.get('total_pieces', blind.get('actual_total_pieces', blind['total_blinds'])),
+            'Mount': blind['mount'],
+            'Sq Ft': round(blind['total_sqft'], 2),
+        }
+        
+        # Add product costs
+        for product_name in active_products:
             cost = blind.get(f'{product_name}_cost', 0)
-            cols[col_offset + i].write(f"${cost:.2f}" if cost > 0 else "-")
-            
-        cols[-3].write(f"${blind.get('shipping_cost', 0):.2f}")
-        with cols[-2]:
-            if st.button("✏️", key=f"edit_{blind['id']}", help=f"Edit Blind {blind['id']}"):
+            col_name = f"{product_name.replace('_', ' ').capitalize()}"
+            row[col_name] = f"${cost:.2f}" if cost > 0 else "-"
+        
+        # Add shipping
+        row['Shipping ($)'] = f"${blind.get('shipping_cost', 0):.2f}"
+        
+        # Calculate line total
+        line_total = sum(
+            blind.get(f'{p}_cost', 0) 
+            for p in active_products
+        ) + blind.get('shipping_cost', 0)
+        row['Line Total ($)'] = f"${line_total:.2f}"
+        
+        table_data.append(row)
+    
+    df = pd.DataFrame(table_data)
+    
+    # --- Display Table with styling ---
+    st.dataframe(
+        df, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            'ID': st.column_config.NumberColumn(format="%d"),
+            'Width (")': st.column_config.NumberColumn(format="%.1f"),
+            'Height (")': st.column_config.NumberColumn(format="%.1f"),
+            'Windows': st.column_config.NumberColumn(format="%d"),
+            'Blind Per Window': st.column_config.NumberColumn(format="%d"),
+            'Sq Ft': st.column_config.NumberColumn(format="%.2f"),
+        }
+    )
+    
+    # --- Action Buttons Below Table ---
+    st.markdown("**Actions:**")
+    for blind in sorted(st.session_state.blinds_data, key=lambda x: x['id']):
+        col1, col2, col3 = st.columns([8, 1, 1])
+        with col1:
+            st.text(f"Blind #{blind['id']} - {blind.get('description', 'N/A')}")
+        with col2:
+            if st.button("✏️ Edit", key=f"edit_{blind['id']}", help=f"Edit Blind {blind['id']}"):
                 st.session_state.prefill_data, st.session_state.editing_blind_id = blind, blind['id']
                 st.session_state.show_add_form = True
                 st.rerun()
-        with cols[-1]:
-            if st.button("🗑️", key=f"delete_{blind['id']}", help=f"Delete Blind {blind['id']}"):
+        with col3:
+            if st.button("🗑️ Delete", key=f"delete_{blind['id']}", help=f"Delete Blind {blind['id']}"):
                 st.session_state.blinds_data = [b for b in st.session_state.blinds_data if b['id'] != blind['id']]
                 st.success(f"Blind #{blind['id']} deleted!")
                 recalculate_all_blinds()
                 st.rerun()
+
+def calculate_product_costs_detailed(blinds_data, p_name):
+    product_cost = 0.0
+    product_sqft = 0.0
+    
+    for blind in blinds_data:
+        blind_sqft = blind.get('total_sqft', 0)
+        selected_products = blind.get('selected_products', {})
+        blind_pricing = blind.get('pricing', {})
+        
+        if selected_products.get(p_name, False):
+            product_price = blind_pricing.get(f'{p_name}_price', 0)
+            cost_for_blind = product_price * blind_sqft
+            
+            product_cost += cost_for_blind
+            product_sqft += blind_sqft
+    
+    return product_cost
+
 
 # --- MAIN APPLICATION FLOW (UPDATED)---
 def main():
@@ -695,7 +930,7 @@ def main():
     if st.session_state.show_add_form: 
         add_blind_form(available_products)
     else:
-        if st.button("➕ Add New Blind", type="primary"):
+        if st.button("p Add New Blind", type="primary"):
             st.session_state.show_add_form = True
             st.session_state.prefill_data, st.session_state.editing_blind_id = None, None
             if 'form_product_selection' in st.session_state:
@@ -712,18 +947,16 @@ def main():
             for p, selected in blind.get('selected_products', {}).items() if selected
         )))
 
-        st.markdown("---")
-
-        st.subheader("Profit Settings")
-        if not active_products_for_settings:
-            st.info("Add a blind and select products to set their final profit percentages.")
-        else:
-            profit_cols = st.columns(len(active_products_for_settings))
-            for i, p_name in enumerate(active_products_for_settings):
-                with profit_cols[i]:
-                    st.number_input(f"{p_name.replace('_',' ').capitalize()} Profit %", min_value=0.0, max_value=1.0, 
-                        step=0.01, format="%.2f", key=f"profit_{p_name}")
-        st.markdown("---")
+    #     st.subheader("Profit Settings")
+    #     if not active_products_for_settings:
+    #         st.info("Add a blind and select products to set their final profit percentages.")
+    #     else:
+    #         profit_cols = st.columns(len(active_products_for_settings))
+    #         for i, p_name in enumerate(active_products_for_settings):
+    #             with profit_cols[i]:
+    #                 st.number_input(f"{p_name.replace('_',' ').capitalize()} Profit %", min_value=0, max_value=100, 
+    # step=1, format="%d", key=f"profit_{p_name}")
+    #     st.markdown("---")
 
         st.subheader("⚙️ Motor Settings")
         motor_cols = st.columns(3)
@@ -736,36 +969,84 @@ def main():
         st.markdown("---")
 
         st.subheader("💰 Cost Summary")
+
+        if st.button("🔄 Apply Changes", key="apply_changes_btn", use_container_width=False):
+            st.session_state.apply_changes = True
+            st.rerun()
+
         sub_totals = {p: sum(b.get(f'{p}_cost', 0) for b in st.session_state.blinds_data) for p in available_products}
         shipping_totals = {p: sum(b.get('shipping_cost', 0) for b in st.session_state.blinds_data if b.get('selected_products', {}).get(p)) for p in available_products}
-        profit_totals = {p: (sub_totals[p] * st.session_state.get(f"profit_{p}", 0)) for p in available_products}
+        
+        profit_totals = {p: (sub_totals[p] * st.session_state.get(f"profit_{p}", 0) / 100) for p in available_products}
         total_motor_cost = st.session_state.motor_quantity * (st.session_state.motor_price + st.session_state.motor_shipping_price)
         
         net_profit = sum(profit_totals.values())
         total_sqft = sum(b.get('total_sqft', 0) for b in st.session_state.blinds_data) 
-        total_pieces = sum(b.get('actual_total_pieces', b.get('total_blinds', 0)) for b in st.session_state.blinds_data)
+
+        # Change Needed
+        total_pieces = sum([(b.get('total_blinds') * b.get('actual_total_pieces')) for b in st.session_state.blinds_data])
+        
         overall_sub_total = sum(sub_totals.values())
         overall_shipping_total = sum(b.get('shipping_cost', 0) for b in st.session_state.blinds_data)
-        bill_total = overall_sub_total + overall_shipping_total + total_motor_cost
+
+        
 
         active_products_summary = {p: v for p, v in sub_totals.items() if v > 0}
         num_summary_cols = len(active_products_summary) + 1 if active_products_summary else 1
         summary_cols = st.columns(num_summary_cols)
 
         i = 0
+        bill_total_cal = []
+        net_profit_tot = []
         for p_name, sub_total_val in active_products_summary.items():
             with summary_cols[i]:
-                st.metric(f"{p_name.replace('_',' ').capitalize()} Sub-Total", f"${sub_total_val:.2f}")
+                sub_total_calculation = calculate_product_costs_detailed(st.session_state.blinds_data, p_name)   
+                
+
+                st.metric(f"{p_name.replace('_',' ').capitalize()} Cost", f"${sub_total_calculation:.2f}")
                 st.metric(f"{p_name.replace('_',' ').capitalize()} Est. Shipping", f"${shipping_totals[p_name]:.2f}")
-                st.metric(f"{p_name.replace('_',' ').capitalize()} Profit", f"${profit_totals[p_name]:.2f}")
+                # # Each product Profit
+                # cost_with_profit = ((sub_total_calculation * 100)/(100 - (st.session_state.get(f"profit_{p_name}", 0)))) 
+                # print(st.session_state.get(f"profit_{p_name}", 0) * 10)
+                # st.metric(f"{p_name.replace('_',' ').capitalize()} Profit", f"${cost_with_profit:.2f}")
+                # bill_total_cal.append(cost_with_profit)
+                # bill_total_cal.append(sub_total_calculation)
+                # net_profit_tot.append(cost_with_profit)
+
+                # New: sum over each blind using its OWN profit ratio
+                product_profit = 0.0
+                for blind in st.session_state.blinds_data:
+                    if not blind.get('selected_products', {}).get(p_name, False):
+                        continue
+                    cost = blind.get(f"{p_name}_cost", 0)
+                    ratio = blind.get('pricing', {}).get(f"{p_name}_profit_ratio", 0.3)  # fallback 0.3
+                    if ratio <= 0 or ratio >= 1:
+                        continue
+                    # Profit = (1 - ratio) * cost
+                    product_profit += (1 - ratio) * cost
+
+                st.metric(
+                    f"{p_name.replace('_',' ').capitalize()} Profit",
+                    f"${product_profit:.2f}"
+                )
+
+                bill_total_cal.append(product_profit)      # ← keep this line
+                bill_total_cal.append(sub_total_calculation)
+                net_profit_tot.append(product_profit)      # ← keep this line
+
             i += 1
-        
+            
+        # Change in 28 Feb 
+        bill_total = sum(bill_total_cal) + overall_shipping_total + total_motor_cost
+
         with summary_cols[-1]:
             st.metric("Total Sq Ft", f"{total_sqft:.2f}")
             st.metric("Total Pieces", f"{total_pieces}")
             st.metric("Motor Cost", f"${total_motor_cost:.2f}")
             st.metric("💵 Bill Total", f"${bill_total:.2f}")
-            st.metric("🎯 Net Profit", f"${net_profit:.2f}")
+            st.metric("🎯 Net Profit", f"${sum(net_profit_tot):.2f}")
+            # Change made final
+            st.metric("Net Profit %", f"{(sum(net_profit_tot)/bill_total)*100:.2f}%")
         st.markdown("---")
         
         st.subheader("Actions")
