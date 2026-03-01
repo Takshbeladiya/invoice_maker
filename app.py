@@ -656,7 +656,7 @@ def generate_excel_report(blinds_data, session_state, active_products):
     bill_total_label_cell.fill = bill_total_fill
 
     # Use the actual cell coordinates we just created
-    bill_total_formula = f"=ROUND({overall_subtotal_ref} + {motor_cost_ref} + {total_shipping_ref} + {motor_cost_ref}, 2)"
+    bill_total_formula = f"=ROUND({overall_subtotal_ref} + {motor_cost_ref} + {total_shipping_ref}, 2)"
 
     bill_total_value_cell = ws.cell(
         row=current_summary_row,
